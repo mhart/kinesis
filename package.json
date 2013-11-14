@@ -1,0 +1,20 @@
+{
+  "name": "kinesis",
+  "version": "0.0.0",
+  "description": "A stream implementation of Amazon's Kinesis",
+  "main": "index.js",
+  "repository": "mhart/kinesis",
+  "keywords": [
+    "kinesis",
+    "stream",
+    "streaming",
+    "aws",
+    "logs",
+    "logging"
+  ],
+  "author": "Michael Hart <michael.hart.au@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mhart/kinesis/issues"
+  }
+}
