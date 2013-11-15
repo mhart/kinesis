@@ -14,7 +14,8 @@
   ],
   "author": "Michael Hart <michael.hart.au@gmail.com>",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/mhart/kinesis/issues"
+  "dependencies": {
+    "once": "~1.3.0",
+    "aws4": "~0.2.1"
   }
 }
