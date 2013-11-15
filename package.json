@@ -1,6 +1,6 @@
 {
   "name": "kinesis",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A stream implementation of Amazon's Kinesis",
   "main": "index.js",
   "repository": "mhart/kinesis",
