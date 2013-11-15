@@ -5,7 +5,7 @@ kinesis
 
 A Node.js stream implementation of [Amazon's Kinesis](http://docs.aws.amazon.com/kinesis/latest/APIReference/).
 
-Allows the consumer to pump data directly into a Kinesis stream, with optional encoding (JSON, etc).
+Allows the consumer to pump data directly into a Kinesis stream.
 
 Example
 -------
@@ -23,11 +23,11 @@ kinesis.listStreams({region: 'us-west-1'}, function(err, streams) {
   // ["http-logs", "click-logs"]
 })
 
-var kinesisSink = kinesis.createWriteStream('http-logs', {region: 'us-west-1', encoding: 'json'})
+var kinesisSink = kinesis.createWriteStream('http-logs', {region: 'us-west-1'})
 
 fs.createReadStream('my.log').pipe(kinesisSink)
 
-var kinesisSource = kinesis.createReadStream('http-logs', {region: 'us-west-1', encoding: 'json'})
+var kinesisSource = kinesis.createReadStream('http-logs', {region: 'us-west-1'})
 
 kinesisSource.pipe(fs.createWriteStream('my.log'))
 ```
@@ -54,4 +54,9 @@ Makes a generic Kinesis request with the given action (eg, `ListStreams`) and da
 TODO
 ----
 
-- Implement the stream methods...
+- Cache stream descriptors
+- Cache shard iterators
+- Allow reading from different positions, not just latest
+- Implement different encoding schemes (or should we just leave that up to piped streams?)
+- Allow explicit hash keys
+- Determine whether partition resolver function is the best method to handle this
