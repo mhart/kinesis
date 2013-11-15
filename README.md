@@ -5,7 +5,9 @@ kinesis
 
 A Node.js stream implementation of [Amazon's Kinesis](http://docs.aws.amazon.com/kinesis/latest/APIReference/).
 
-Allows the consumer to pump data directly into a Kinesis stream.
+Allows the consumer to pump data directly into (and out of) a Kinesis stream.
+
+This makes it trivial to setup Kinesis as a logging sink with [Bunyan](https://github.com/trentm/node-bunyan), or any other logging library.
 
 Example
 -------
@@ -37,15 +39,15 @@ API
 
 ### kinesis.listStreams([options], callback)
 
-Returns an array in the callback with the list of all stream names for the AWS account
+Calls the callback with an array of all stream names for the AWS account
 
 ### kinesis.createReadStream(name, [options])
 
-Returns a read stream for the given Kinesis stream
+Returns a readable stream for the given Kinesis stream
 
 ### kinesis.createWriteStream(name, [options])
 
-Returns a write stream for the given Kinesis stream
+Returns a writable stream for the given Kinesis stream
 
 ### kinesis.request(action, [data], [options], callback)
 
