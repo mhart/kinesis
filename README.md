@@ -9,6 +9,8 @@ Allows the consumer to pump data directly into (and out of) a Kinesis stream.
 
 This makes it trivial to setup Kinesis as a logging sink with [Bunyan](https://github.com/trentm/node-bunyan), or any other logging library.
 
+For setting up a local Kinesis instance (eg for testing), check out [Kinesalite](https://github.com/mhart/kinesalite).
+
 Example
 -------
 
