@@ -1,6 +1,5 @@
-var utils = require('utils'),
+var util = require('util'),
     stream = require('stream'),
-    http = require('http'),
     https = require('https'),
     once = require('once'),
     aws4 = require('aws4')
@@ -16,7 +15,7 @@ exports.request = request
 function listStreams(options, cb) {
   if (!cb) { cb = options; options = {} }
 
-  request('ListStreams', {}, options, function(err, res) {
+  request('ListStreams', options, function(err, res) {
     if (err) return cb(err)
 
     return cb(null, res.StreamNames)
@@ -34,12 +33,12 @@ function createWriteStream(name, options) {
 }
 
 
-utils.inherits(KinesisReadStream, stream.Readable)
+util.inherits(KinesisReadStream, stream.Readable)
 
 function KinesisReadStream(name, options) {
   stream.Readable.call(this, options)
   this.name = name
-  this.options = options
+  this.options = options || {}
 }
 
 KinesisReadStream.prototype._read = function() {
@@ -66,7 +65,7 @@ KinesisReadStream.prototype._read = function() {
 
         var data = {StreamName: self.name, ShardId: shardId, ShardIterator: res.ShardIterator}
 
-        self.getNextRecords(data, function(err) {
+        self.getRecords(data, function(err) {
           if (err) return self.emit('error', err)
 
           // If all shards are done, push null to signal we're finished
@@ -79,10 +78,10 @@ KinesisReadStream.prototype._read = function() {
 }
 
 // `data` should contain at least: StreamName, ShardId, ShardIterator
-KinesisReadStream.prototype.getNextRecords = function(data, cb) {
+KinesisReadStream.prototype.getRecords = function(data, cb) {
   var self = this
 
-  request('GetNextRecords', data, self.options, function(err, res) {
+  request('GetRecords', data, self.options, function(err, res) {
     if (err) return cb(err)
 
     // If the shard has been closed the requested iterator will not return any more data
@@ -96,21 +95,21 @@ KinesisReadStream.prototype.getNextRecords = function(data, cb) {
 
     // Recurse until we're done
     data.ShardIterator = res.NextShardIterator
-    self.getNextRecords(data, cb)
+    self.getRecords(data, cb)
   })
 }
 
 
-utils.inherits(KinesisWriteStream, stream.Writable)
+util.inherits(KinesisWriteStream, stream.Writable)
 
 function KinesisWriteStream(name, options) {
   stream.Writable.call(this, options)
   this.name = name
-  this.options = options
-  this.resolvePartitionKey = options.resolvePartitionKey || function() { return 'partition-1' }
+  this.options = options || {}
+  this.resolvePartitionKey = this.options.resolvePartitionKey || function() { return 'partition-1' }
 }
 
-KinesisReadStream.prototype._write = function(chunk, encoding, cb) {
+KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
   // TODO: Allow ExplicitHashKey
 
   // Determine PartitionKey
@@ -124,14 +123,13 @@ KinesisReadStream.prototype._write = function(chunk, encoding, cb) {
 
 function request(action, data, options, cb) {
   if (!cb) { cb = options; options = {} }
-  if (!cb) { cb = data; data = {} }
+  if (!cb) { cb = data; data = '' }
 
   options = resolveOptions(options)
   cb = once(cb)
 
-  var httpModule = options.https ? https : http,
-      httpOptions = {},
-      body = JSON.stringify(data || {}),
+  var httpOptions = {},
+      body = data ? JSON.stringify(data) : '',
       req
 
   httpOptions.host = options.host
@@ -139,6 +137,7 @@ function request(action, data, options, cb) {
   httpOptions.agent = options.agent
   httpOptions.method = 'POST'
   httpOptions.path = '/'
+  httpOptions.body = body
 
   httpOptions.headers = {
     'Host': httpOptions.host,
@@ -150,7 +149,7 @@ function request(action, data, options, cb) {
 
   aws4.sign(httpOptions, options.credentials)
 
-  req = httpModule.request(httpOptions, function(res) {
+  req = https.request(httpOptions, function(res) {
     var json = ''
 
     res.setEncoding('utf8')
@@ -208,7 +207,7 @@ function resolveOptions(options) {
   }
   if (!options.region) options.region = (options.host || '').split('.', 2)[1] || 'us-east-1'
   if (!options.host) options.host = 'kinesis.' + options.region + '.amazonaws.com'
-  if (!options.version) options.version = '20130901'
+  if (!options.version) options.version = '20131202'
 
   if (!options.credentials) options.credentials = options.credentials
 
