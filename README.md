@@ -31,7 +31,7 @@ var kinesisSink = kinesis.createWriteStream('http-logs', {region: 'us-west-1'})
 
 fs.createReadStream('my.log').pipe(kinesisSink)
 
-var kinesisSource = kinesis.createReadStream('http-logs', {region: 'us-west-1'})
+var kinesisSource = kinesis.createReadStream('http-logs', {region: 'us-west-1', oldest: true})
 
 kinesisSource.pipe(fs.createWriteStream('my.log'))
 ```
@@ -45,22 +45,36 @@ Calls the callback with an array of all stream names for the AWS account
 
 ### kinesis.createReadStream(name, [options])
 
-Returns a readable stream for the given Kinesis stream
+Returns a readable stream for the given Kinesis stream that reads from all shards continuously.
+
+`options` include:
+
+  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
+  - `shardIds`: an array of shard ID names, or an key-value object with the
+    shard IDs as keys and sequence number and/or shard iterator as values. If
+    not provided, these will be fetched and cached.
+  - `oldest`: if truthy, then will start at the oldest records (using `TRIM_HORIZON`) instead of the latest
 
 ### kinesis.createWriteStream(name, [options])
 
 Returns a writable stream for the given Kinesis stream
 
+`options` include:
+
+  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
+  - `resolvePartitionKey`: a function to determine the partition key of the record (random by default)
+
 ### kinesis.request(action, [data], [options], callback)
 
 Makes a generic Kinesis request with the given action (eg, `ListStreams`) and data as the body.
 
+`options` include:
+
+  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
+
 TODO
 ----
 
-- Cache stream descriptors
-- Cache shard iterators
-- Allow reading from different positions, not just latest
 - Implement different encoding schemes (or should we just leave that up to piped streams?)
 - Allow explicit hash keys
-- Determine whether partition resolver function is the best method to handle this
+

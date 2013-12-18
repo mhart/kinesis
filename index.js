@@ -1,13 +1,14 @@
 var util = require('util'),
     stream = require('stream'),
     https = require('https'),
+    crypto = require('crypto'),
+    es = require('event-stream'),
     once = require('once'),
     aws4 = require('aws4')
 
 exports.listStreams = listStreams
 exports.createReadStream = createReadStream
 exports.createWriteStream = createWriteStream
-exports.KinesisReadStream = KinesisReadStream
 exports.KinesisWriteStream = KinesisWriteStream
 exports.request = request
 
@@ -24,7 +25,11 @@ function listStreams(options, cb) {
 
 
 function createReadStream(name, options) {
-  return new KinesisReadStream(name, options)
+  var kinesisReadable = es.readable(kinesisRead, true)
+  kinesisReadable.name = name
+  kinesisReadable.options = options || {}
+  kinesisReadable.getRecords = getRecords.bind(kinesisReadable)
+  return kinesisReadable
 }
 
 
@@ -33,44 +38,75 @@ function createWriteStream(name, options) {
 }
 
 
-util.inherits(KinesisReadStream, stream.Readable)
-
-function KinesisReadStream(name, options) {
-  stream.Readable.call(this, options)
-  this.name = name
-  this.options = options || {}
-}
-
-KinesisReadStream.prototype._read = function() {
-  var self = this
+function kinesisRead(count, cb) {
 
   // Firstly we need to know what shards we have
-  // TODO: Cache this (and allow it to be passed in as options too)
+  var self = this,
+      shardIds = self.shardIds || self.options.shardIds,
+      getShardIds = shardIds ? function(cb) { cb(null, shardIds) } : function(cb) {
+        request('DescribeStream', {StreamName: self.name}, self.options, function(err, res) {
+          if (err) return cb(err)
+          cb(null, res.StreamDescription.Shards.map(function(shard) { return shard.ShardId }))
+        })
+      }
 
-  request('DescribeStream', {StreamName: self.name}, self.options, function(err, res) {
+  getShardIds(function(err, shardIds) {
     if (err) return self.emit('error', err)
 
-    var shardIds = res.StreamDescription.Shards.map(function(shard) { return shard.ShardId }),
-        shardCount = shardIds.length
+    if (Array.isArray(shardIds)) {
+      self.shardIds = {}
+      shardIds.forEach(function(shardId) {
+        self.shardIds[shardId] = {lastSequenceNumber: null, nextShardIterator: null}
+      })
+    } else {
+      self.shardIds = shardIds
+    }
+    shardIds = self.shardIds
+
+    var shardCount = Object.keys(shardIds).length
 
     // Read from all shards in parallel
-    shardIds.forEach(function(shardId) {
+    Object.keys(shardIds).forEach(function(shardId) {
 
-      // TODO: Allow reading from a particular position
-      // TODO: Cache the shard iterator so we don't need to look it up
-      var data = {StreamName: self.name, ShardId: shardId, ShardIteratorType: 'LATEST'}
+      var data = {StreamName: self.name, ShardId: shardId}, getShardIterator
 
-      request('GetShardIterator', data, self.options, function(err, res) {
+      if (shardIds[shardId].nextShardIterator != null) {
+        getShardIterator = function(cb) { cb(null, shardIds[shardId].nextShardIterator) }
+      } else {
+        if (shardIds[shardId].lastSequenceNumber != null) {
+          data.ShardIteratorType = 'AFTER_SEQUENCE_NUMBER'
+          data.StartingSequenceNumber = shardIds[shardId].lastSequenceNumber
+        } else if (self.options.oldest) {
+          data.ShardIteratorType = 'TRIM_HORIZON'
+        } else {
+          data.ShardIteratorType = 'LATEST'
+        }
+        getShardIterator = function(cb) {
+          request('GetShardIterator', data, self.options, function(err, res) {
+            if (err) return cb(err)
+            cb(null, res.ShardIterator)
+          })
+        }
+      }
+
+      // TODO: Cache the shard iterator so we don't need to look it up (stays valid for 5 minutes)
+      getShardIterator(function(err, shardIterator) {
         if (err) return self.emit('error', err)
 
-        var data = {StreamName: self.name, ShardId: shardId, ShardIterator: res.ShardIterator}
+        var allDone = true,
+            data = {StreamName: self.name, ShardId: shardId, ShardIterator: shardIterator}
 
-        self.getRecords(data, function(err) {
+        self.getRecords(data, function(err, shardDone) {
           if (err) return self.emit('error', err)
 
-          // If all shards are done, push null to signal we're finished
-          if (!--shardCount)
-            self.push(null)
+          allDone = allDone && shardDone
+
+          if (!--shardCount) {
+            // If all shards are done, push null to signal we're finished
+            if (allDone)
+              self.emit('end')
+            cb()
+          }
         })
       })
     })
@@ -78,7 +114,7 @@ KinesisReadStream.prototype._read = function() {
 }
 
 // `data` should contain at least: StreamName, ShardId, ShardIterator
-KinesisReadStream.prototype.getRecords = function(data, cb) {
+function getRecords(data, cb) {
   var self = this
 
   request('GetRecords', data, self.options, function(err, res) {
@@ -86,16 +122,25 @@ KinesisReadStream.prototype.getRecords = function(data, cb) {
 
     // If the shard has been closed the requested iterator will not return any more data
     if (res.NextShardIterator == null)
-      return cb()
+      return cb(null, true)
 
-    res.Records.forEach(function(record) {
-      // TODO: convert data as we push - can always just pipe too
-      self.push(record.Data, 'base64')
-    })
+    self.shardIds[data.ShardId].nextShardIterator = res.NextShardIterator
+
+    if (!res.Records.length)
+      return cb(null, false)
+
+    var i, record
+
+    for (i = 0; i < res.Records.length; i++) {
+      record = res.Records[i]
+      self.shardIds[data.ShardId].lastSequenceNumber = record.SequenceNumber
+      self.emit('data', new Buffer(record.Data, 'base64'))
+      self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
+    }
 
     // Recurse until we're done
     data.ShardIterator = res.NextShardIterator
-    self.getRecords(data, cb)
+    process.nextTick(function() { self.getRecords(data, cb) })
   })
 }
 
@@ -106,18 +151,21 @@ function KinesisWriteStream(name, options) {
   stream.Writable.call(this, options)
   this.name = name
   this.options = options || {}
-  this.resolvePartitionKey = this.options.resolvePartitionKey || function() { return 'partition-1' }
+  this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
 }
 
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
   // TODO: Allow ExplicitHashKey
 
-  // Determine PartitionKey
   var self = this,
       partitionKey = self.resolvePartitionKey(chunk, encoding),
       data = {StreamName: self.name, PartitionKey: partitionKey, Data: chunk.toString('base64')}
 
   request('PutRecord', data, self.options, cb)
+}
+
+KinesisWriteStream._randomPartitionKey = function() {
+  return crypto.randomBytes(16).toString('hex')
 }
 
 
