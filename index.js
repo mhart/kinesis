@@ -134,7 +134,7 @@ function getRecords(data, cb) {
     for (i = 0; i < res.Records.length; i++) {
       record = res.Records[i]
       self.shardIds[data.ShardId].lastSequenceNumber = record.SequenceNumber
-      self.emit('data', new Buffer(record.Data, 'base64'))
+      self.emit('data', new Buffer(record.Data, 'base64'), {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
       self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
     }
 
