@@ -159,8 +159,8 @@ function KinesisWriteStream(name, options) {
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
   var self = this,
       partitionKey = self.resolvePartitionKey(chunk, encoding),
-      explicitHashKey = self.resolveExplicitHashKey(chunk, encoding),
-      sequenceNumberForOrdering = self.resolveSequenceNumberForOrdering(),
+      explicitHashKey = (self.resolveExplicitHashKey) ? self.resolveExplicitHashKey(chunk, encoding) : null,
+      sequenceNumberForOrdering = (self.resolveSequenceNumberForOrdering) ? self.resolveSequenceNumberForOrdering() : null,
       data = {
         StreamName: self.name,
         PartitionKey: partitionKey, 
