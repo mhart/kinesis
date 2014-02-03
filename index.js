@@ -152,14 +152,22 @@ function KinesisWriteStream(name, options) {
   this.name = name
   this.options = options || {}
   this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
+  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey || null
+  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering || null
 }
 
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
-  // TODO: Allow ExplicitHashKey
-
   var self = this,
       partitionKey = self.resolvePartitionKey(chunk, encoding),
-      data = {StreamName: self.name, PartitionKey: partitionKey, Data: chunk.toString('base64')}
+      explicitHashKey = self.resolveExplicitHashKey(chunk, encoding),
+      sequenceNumberForOrdering = self.resolveSequenceNumberForOrdering(),
+      data = {
+        StreamName: self.name,
+        PartitionKey: partitionKey, 
+        Data: chunk.toString('base64'),
+        ExplicitHashKey: explicitHashKey,
+        SequenceNumberForOrdering: sequenceNumberForOrdering
+      }
 
   request('PutRecord', data, self.options, cb)
 }
