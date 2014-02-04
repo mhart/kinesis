@@ -134,7 +134,7 @@ function getRecords(data, cb) {
     for (i = 0; i < res.Records.length; i++) {
       record = res.Records[i]
       self.shardIds[data.ShardId].lastSequenceNumber = record.SequenceNumber
-      self.emit('data', new Buffer(record.Data, 'base64'))
+      self.emit('data', new Buffer(record.Data, 'base64'), {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
       self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
     }
 
@@ -152,14 +152,22 @@ function KinesisWriteStream(name, options) {
   this.name = name
   this.options = options || {}
   this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
+  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey
+  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering
 }
 
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
-  // TODO: Allow ExplicitHashKey
-
   var self = this,
       partitionKey = self.resolvePartitionKey(chunk, encoding),
-      data = {StreamName: self.name, PartitionKey: partitionKey, Data: chunk.toString('base64')}
+      explicitHashKey = (self.resolveExplicitHashKey) ? self.resolveExplicitHashKey(chunk, encoding) : null,
+      sequenceNumberForOrdering = (self.resolveSequenceNumberForOrdering) ? self.resolveSequenceNumberForOrdering() : null,
+      data = {
+        StreamName: self.name,
+        PartitionKey: partitionKey, 
+        Data: chunk.toString('base64'),
+        ExplicitHashKey: explicitHashKey,
+        SequenceNumberForOrdering: sequenceNumberForOrdering
+      }
 
   request('PutRecord', data, self.options, cb)
 }
@@ -221,7 +229,7 @@ function request(action, data, options, cb) {
         if (res.statusCode == 413) json = 'Request Entity Too Large'
         error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
       }
-
+      
       cb(error)
     })
   }).on('error', cb)
