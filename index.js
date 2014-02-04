@@ -152,8 +152,8 @@ function KinesisWriteStream(name, options) {
   this.name = name
   this.options = options || {}
   this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
-  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey || null
-  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering || null
+  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey
+  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering
 }
 
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
@@ -229,7 +229,7 @@ function request(action, data, options, cb) {
         if (res.statusCode == 413) json = 'Request Entity Too Large'
         error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
       }
-
+      
       cb(error)
     })
   }).on('error', cb)
