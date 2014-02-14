@@ -54,6 +54,7 @@ Returns a readable stream for the given Kinesis stream that reads from all shard
     shard IDs as keys and sequence number and/or shard iterator as values. If
     not provided, these will be fetched and cached.
   - `oldest`: if truthy, then will start at the oldest records (using `TRIM_HORIZON`) instead of the latest
+  - `objectMode`: if truthy, will emit an object with `data`, `shardId` and `sequenceNumber` properties
 
 ### kinesis.createWriteStream(name, [options])
 
@@ -62,7 +63,9 @@ Returns a writable stream for the given Kinesis stream
 `options` include:
 
   - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
-  - `resolvePartitionKey`: a function to determine the partition key of the record (random by default)
+  - `resolvePartitionKey`: a function to determine the `PartitionKey` of the record (random by default)
+  - `resolveExplicitHashKey`: a function to determine the `ExplicitHashKey` of the record (none by default)
+  - `resolveSequenceNumberForOrdering`: a function to determine the `SequenceNumberForOrdering` of the record (none by default)
 
 ### kinesis.request(action, [data], [options], callback)
 
@@ -72,9 +75,4 @@ Makes a generic Kinesis request with the given action (eg, `ListStreams`) and da
 
   - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
 
-TODO
-----
-
-- Implement different encoding schemes (or should we just leave that up to piped streams?)
-- Allow explicit hash keys
 

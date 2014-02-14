@@ -134,8 +134,16 @@ function getRecords(data, cb) {
     for (i = 0; i < res.Records.length; i++) {
       record = res.Records[i]
       self.shardIds[data.ShardId].lastSequenceNumber = record.SequenceNumber
-      self.emit('data', new Buffer(record.Data, 'base64'))
-      self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
+      if (self.options.objectMode) {
+        self.emit('data', {
+          shardId: data.ShardId,
+          sequenceNumber: record.SequenceNumber,
+          data: new Buffer(record.Data, 'base64'),
+        })
+      } else {
+        self.emit('data', new Buffer(record.Data, 'base64'))
+        self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
+      }
     }
 
     // Recurse until we're done
@@ -152,14 +160,20 @@ function KinesisWriteStream(name, options) {
   this.name = name
   this.options = options || {}
   this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
+  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey
+  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering
 }
 
 KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
-  // TODO: Allow ExplicitHashKey
-
   var self = this,
       partitionKey = self.resolvePartitionKey(chunk, encoding),
       data = {StreamName: self.name, PartitionKey: partitionKey, Data: chunk.toString('base64')}
+
+  if (self.resolveExplicitHashKey)
+    data.ExplicitHashKey = self.resolveExplicitHashKey(chunk, encoding)
+
+  if (self.resolveSequenceNumberForOrdering)
+    data.SequenceNumberForOrdering = self.resolveSequenceNumberForOrdering(chunk, encoding)
 
   request('PutRecord', data, self.options, cb)
 }
