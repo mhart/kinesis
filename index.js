@@ -196,7 +196,7 @@ function request(action, data, options, cb) {
 
   httpOptions.host = options.host
   httpOptions.port = options.port
-  httpOptions.agent = options.agent
+  if (options.agent) httpOptions.agent = options.agent
   httpOptions.method = 'POST'
   httpOptions.path = '/'
   httpOptions.body = body
