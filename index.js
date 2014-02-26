@@ -51,7 +51,7 @@ function kinesisRead(count, cb) {
       }
 
   getShardIds(function(err, shardIds) {
-    if (err) return self.emit('error', err)
+    if (err) return cb(err)
 
     if (Array.isArray(shardIds)) {
       self.shardIds = {}
@@ -91,13 +91,13 @@ function kinesisRead(count, cb) {
 
       // TODO: Cache the shard iterator so we don't need to look it up (stays valid for 5 minutes)
       getShardIterator(function(err, shardIterator) {
-        if (err) return self.emit('error', err)
+        if (err) return cb(err)
 
         var allDone = true,
             data = {StreamName: self.name, ShardId: shardId, ShardIterator: shardIterator}
 
         self.getRecords(data, function(err, shardDone) {
-          if (err) return self.emit('error', err)
+          if (err) return cb(err)
 
           allDone = allDone && shardDone
 
@@ -185,14 +185,14 @@ KinesisWriteStream._randomPartitionKey = function() {
 
 function request(action, data, options, cb) {
   if (!cb) { cb = options; options = {} }
-  if (!cb) { cb = data; data = '' }
+  if (!cb) { cb = data; data = {} }
 
   options = resolveOptions(options)
   cb = once(cb)
 
   var httpOptions = {},
-      body = data ? JSON.stringify(data) : '',
-      req
+      body = JSON.stringify(data),
+      retryPolicy = options.retryPolicy || defaultRetryPolicy
 
   httpOptions.host = options.host
   httpOptions.port = options.port
@@ -203,45 +203,83 @@ function request(action, data, options, cb) {
 
   httpOptions.headers = {
     'Host': httpOptions.host,
-    'Date': new Date().toUTCString(),
     'Content-Length': Buffer.byteLength(body),
     'Content-Type': 'application/x-amz-json-1.1',
     'X-Amz-Target': 'Kinesis_' + options.version + '.' + action,
   }
 
-  aws4.sign(httpOptions, options.credentials)
+  function makeRequest(cb) {
+    httpOptions.headers.Date = new Date().toUTCString()
 
-  req = https.request(httpOptions, function(res) {
-    var json = ''
+    aws4.sign(httpOptions, options.credentials)
 
-    res.setEncoding('utf8')
+    var req = https.request(httpOptions, function(res) {
+      var json = '', error = new Error
 
-    res.on('error', cb)
-    res.on('data', function(chunk){ json += chunk })
-    res.on('end', function() {
-      var response, error
+      res.setEncoding('utf8')
 
-      try { response = JSON.parse(json) } catch (e) { }
+      res.on('error', cb)
+      res.on('data', function(chunk){ json += chunk })
+      res.on('end', function() {
+        var response
 
-      if (res.statusCode == 200 && response != null)
-        return cb(null, response)
+        try { response = JSON.parse(json) } catch (e) { }
 
-      error = new Error
-      error.statusCode = res.statusCode
-      if (response != null) {
-        error.name = (response.__type || '').split('#').pop()
-        error.message = response.message || response.Message || JSON.stringify(response)
-      } else {
-        if (res.statusCode == 413) json = 'Request Entity Too Large'
-        error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
-      }
+        if (res.statusCode == 200 && response != null)
+          return cb(null, response)
 
-      cb(error)
+        error.statusCode = res.statusCode
+        if (response != null) {
+          error.name = (response.__type || '').split('#').pop()
+          error.message = response.message || response.Message || JSON.stringify(response)
+        } else {
+          if (res.statusCode == 413) json = 'Request Entity Too Large'
+          error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
+        }
+
+        cb(error)
+      })
+    }).on('error', cb)
+
+    if (options.timeout != null) req.setTimeout(options.timeout)
+
+    req.end(body)
+
+    return req
+  }
+
+  return retryPolicy(makeRequest, options, cb)
+}
+
+function defaultRetryPolicy(makeRequest, options, cb) {
+  var initialRetryMs = options.initialRetryMs || 50,
+      maxRetries = options.maxRetries || 10, // Timeout doubles each time => ~51 sec timeout
+      errorCodes = options.errorCodes || [
+        'EADDRINFO',
+        'ETIMEDOUT',
+        'ECONNRESET',
+        'ESOCKETTIMEDOUT',
+        'ENOTFOUND',
+        'EMFILE',
+      ],
+      errorNames = options.errorNames || [
+        'ProvisionedThroughputExceededException',
+        'ThrottlingException',
+      ]
+
+  function retry(i) {
+    return makeRequest(function(err, data) {
+      if (!err || i >= maxRetries)
+        return cb(err, data)
+
+      if (err.statusCode >= 500 || ~errorCodes.indexOf(err.code) || ~errorNames.indexOf(err.name))
+        return setTimeout(retry, initialRetryMs << i, i + 1)
+
+      return cb(err)
     })
-  }).on('error', cb)
+  }
 
-  req.write(body)
-  req.end()
+  return retry(0)
 }
 
 function resolveOptions(options) {
