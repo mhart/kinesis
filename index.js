@@ -2,15 +2,240 @@ var util = require('util'),
     stream = require('stream'),
     https = require('https'),
     crypto = require('crypto'),
-    es = require('event-stream'),
+    async = require('async'),
     once = require('once'),
+    lruCache = require('lru-cache'),
     aws4 = require('aws4')
 
+exports.stream = function(options) {
+  return new KinesisStream(options)
+}
+exports.KinesisStream = KinesisStream
 exports.listStreams = listStreams
-exports.createReadStream = createReadStream
-exports.createWriteStream = createWriteStream
-exports.KinesisWriteStream = KinesisWriteStream
 exports.request = request
+
+
+function KinesisStream(options) {
+  if (typeof options == 'string') options = {name: options}
+  if (!options || !options.name) throw new Error('A stream name must be given')
+  stream.Duplex.call(this, {objectMode: true})
+  this.options = options
+  this.name = options.name
+  this.writeConcurrency = options.writeConcurrency || 1
+  this.sequenceCache = lruCache(options.cacheSize || 1000)
+  this.currentWrites = 0
+  this.buffer = []
+  this.paused = true
+  this.fetching = false
+  this.shards = []
+}
+util.inherits(KinesisStream, stream.Duplex)
+
+KinesisStream.prototype._read = function() {
+  this.paused = false
+  this.drainBuffer()
+}
+
+KinesisStream.prototype.drainBuffer = function() {
+  var self = this
+  if (self.paused) return
+  while (self.buffer.length) {
+    if (!self.push(self.buffer.shift())) {
+      self.paused = true
+      return
+    }
+  }
+  if (self.fetching) return
+  self.fetching = true
+  self.getNextRecords(function(err) {
+    self.fetching = false
+    if (err) self.emit('error', err)
+
+    // If all shards have been closed, the stream should end
+    if (self.shards.every(function(shard) { return shard.ended }))
+      return self.push(null)
+
+    self.drainBuffer()
+  })
+}
+
+KinesisStream.prototype.getNextRecords = function(cb) {
+  var self = this
+  self.resolveShards(function(err, shards) {
+    if (err) return cb(err)
+    async.each(shards, self.getShardIteratorRecords.bind(self), cb)
+  })
+}
+
+KinesisStream.prototype.resolveShards = function(cb) {
+  var self = this, getShards
+
+  if (self.shards.length) return cb(null, self.shards)
+
+  getShards = self.options.shards ? function(cb) { cb(null, self.options.shards) } : self.getShardIds.bind(self)
+
+  getShards(function(err, shards) {
+    if (err) return cb(err)
+
+    self.shards = shards.map(function(shard) {
+      return typeof shard == 'string' ? {
+        id: shard,
+        readSequenceNumber: null,
+        writeSequenceNumber: null,
+        nextShardIterator: null,
+        ended: false,
+      } : shard
+    })
+
+    cb(null, self.shards)
+  })
+}
+
+KinesisStream.prototype.getShardIds = function(cb) {
+  var self = this
+  request('DescribeStream', {StreamName: self.name}, self.options, function(err, res) {
+    if (err) return cb(err)
+    cb(null, res.StreamDescription.Shards.map(function(shard) { return shard.ShardId }))
+  })
+}
+
+KinesisStream.prototype.getShardIteratorRecords = function(shard, cb) {
+  var self = this,
+      data = {StreamName: self.name, ShardId: shard.id}, getShardIterator
+
+  if (shard.nextShardIterator != null) {
+    getShardIterator = function(cb) { cb(null, shard.nextShardIterator) }
+  } else {
+    if (shard.readSequenceNumber != null) {
+      data.ShardIteratorType = 'AFTER_SEQUENCE_NUMBER'
+      data.StartingSequenceNumber = shard.readSequenceNumber
+    } else if (self.options.oldest) {
+      data.ShardIteratorType = 'TRIM_HORIZON'
+    } else {
+      data.ShardIteratorType = 'LATEST'
+    }
+    getShardIterator = function(cb) {
+      request('GetShardIterator', data, self.options, function(err, res) {
+        if (err) return cb(err)
+        cb(null, res.ShardIterator)
+      })
+    }
+  }
+
+  getShardIterator(function(err, shardIterator) {
+    if (err) return cb(err)
+
+    self.getRecords(shard, shardIterator, function(err, records) {
+      if (err) {
+        // Try again if the shard iterator has expired
+        if (err.name == 'ExpiredIteratorException') {
+          shard.nextShardIterator = null
+          return self.getShardIteratorRecords(shard, cb)
+        }
+        return cb(err)
+      }
+
+      if (records.length) {
+        shard.readSequenceNumber = records[records.length - 1].SequenceNumber
+        self.buffer = self.buffer.concat(records)
+        self.drainBuffer()
+      }
+
+      cb()
+    })
+  })
+}
+
+KinesisStream.prototype.getRecords = function(shard, shardIterator, cb) {
+  var self = this,
+      data = {StreamName: self.name, ShardId: shard.id, ShardIterator: shardIterator}
+
+  request('GetRecords', data, self.options, function(err, res) {
+    if (err) return cb(err)
+
+    // If the shard has been closed the requested iterator will not return any more data
+    if (res.NextShardIterator == null) {
+      shard.ended = true
+      return cb(null, [])
+    }
+
+    shard.nextShardIterator = res.NextShardIterator
+
+    res.Records.forEach(function(record) { record.Data = new Buffer(record.Data, 'base64') })
+
+    return cb(null, res.Records)
+  })
+}
+
+KinesisStream.prototype._write = function(data, encoding, cb) {
+  var self = this, i, sequenceNumber
+
+  if (Buffer.isBuffer(data)) data = {Data: data}
+
+  if (Buffer.isBuffer(data.Data)) data.Data = data.Data.toString('base64')
+
+  if (!data.StreamName) data.StreamName = self.name
+
+  if (!data.PartitionKey) data.PartitionKey = crypto.randomBytes(16).toString('hex')
+
+  if (!data.SequenceNumberForOrdering) {
+
+    // If we only have 1 shard then we can just use its sequence number
+    if (self.shards.length == 1 && self.shards[0].writeSequenceNumber) {
+      data.SequenceNumberForOrdering = self.shards[0].writeSequenceNumber
+
+    // Otherwise, if we have a shard ID already assigned, then use that
+    } else if (data.ShardId) {
+      for (i = 0; i < self.shards.length; i++) {
+        if (self.shards[i].id == data.ShardId) {
+          if (self.shards[i].writeSequenceNumber)
+            data.SequenceNumberForOrdering = self.shards[i].writeSequenceNumber
+          break
+        }
+      }
+      // Not actually supposed to be part of PutRecord
+      delete data.ShardId
+
+    // Otherwise check if we have it cached for this PartitionKey
+    } else if ((sequenceNumber = self.sequenceCache.get(data.PartitionKey)) != null) {
+      data.SequenceNumberForOrdering = sequenceNumber
+    }
+  }
+
+  self.currentWrites++
+
+  request('PutRecord', data, self.options, function(err, responseData) {
+    self.currentWrites--
+    if (err) {
+      self.emit('putRecord')
+      return self.emit('error', err)
+    }
+    sequenceNumber = responseData.SequenceNumber
+
+    if (bignumCompare(sequenceNumber, self.sequenceCache.get(data.PartitionKey)) > 0)
+      self.sequenceCache.set(data.PartitionKey, sequenceNumber)
+
+    self.resolveShards(function(err, shards) {
+      for (var i = 0; i < shards.length; i++) {
+        if (shards[i].id != responseData.ShardId) continue
+
+        if (bignumCompare(sequenceNumber, shards[i].writeSequenceNumber) > 0)
+          shards[i].writeSequenceNumber = sequenceNumber
+
+        self.emit('putRecord')
+      }
+    })
+  })
+
+  if (self.currentWrites < self.writeConcurrency)
+    return cb()
+
+  function onPutRecord() {
+    self.removeListener('putRecord', onPutRecord)
+    cb()
+  }
+  self.on('putRecord', onPutRecord)
+}
 
 
 function listStreams(options, cb) {
@@ -21,165 +246,6 @@ function listStreams(options, cb) {
 
     return cb(null, res.StreamNames)
   })
-}
-
-
-function createReadStream(name, options) {
-  var kinesisReadable = es.readable(kinesisRead, true)
-  kinesisReadable.name = name
-  kinesisReadable.options = options || {}
-  kinesisReadable.getRecords = getRecords.bind(kinesisReadable)
-  return kinesisReadable
-}
-
-
-function createWriteStream(name, options) {
-  return new KinesisWriteStream(name, options)
-}
-
-
-function kinesisRead(count, cb) {
-
-  // Firstly we need to know what shards we have
-  var self = this,
-      shardIds = self.shardIds || self.options.shardIds,
-      getShardIds = shardIds ? function(cb) { cb(null, shardIds) } : function(cb) {
-        request('DescribeStream', {StreamName: self.name}, self.options, function(err, res) {
-          if (err) return cb(err)
-          cb(null, res.StreamDescription.Shards.map(function(shard) { return shard.ShardId }))
-        })
-      }
-
-  getShardIds(function(err, shardIds) {
-    if (err) return cb(err)
-
-    if (Array.isArray(shardIds)) {
-      self.shardIds = {}
-      shardIds.forEach(function(shardId) {
-        self.shardIds[shardId] = {lastSequenceNumber: null, nextShardIterator: null}
-      })
-    } else {
-      self.shardIds = shardIds
-    }
-    shardIds = self.shardIds
-
-    var shardCount = Object.keys(shardIds).length
-
-    // Read from all shards in parallel
-    Object.keys(shardIds).forEach(function(shardId) {
-
-      var data = {StreamName: self.name, ShardId: shardId}, getShardIterator
-
-      if (shardIds[shardId].nextShardIterator != null) {
-        getShardIterator = function(cb) { cb(null, shardIds[shardId].nextShardIterator) }
-      } else {
-        if (shardIds[shardId].lastSequenceNumber != null) {
-          data.ShardIteratorType = 'AFTER_SEQUENCE_NUMBER'
-          data.StartingSequenceNumber = shardIds[shardId].lastSequenceNumber
-        } else if (self.options.oldest) {
-          data.ShardIteratorType = 'TRIM_HORIZON'
-        } else {
-          data.ShardIteratorType = 'LATEST'
-        }
-        getShardIterator = function(cb) {
-          request('GetShardIterator', data, self.options, function(err, res) {
-            if (err) return cb(err)
-            cb(null, res.ShardIterator)
-          })
-        }
-      }
-
-      // TODO: Cache the shard iterator so we don't need to look it up (stays valid for 5 minutes)
-      getShardIterator(function(err, shardIterator) {
-        if (err) return cb(err)
-
-        var allDone = true,
-            data = {StreamName: self.name, ShardId: shardId, ShardIterator: shardIterator}
-
-        self.getRecords(data, function(err, shardDone) {
-          if (err) return cb(err)
-
-          allDone = allDone && shardDone
-
-          if (!--shardCount) {
-            // If all shards are done, push null to signal we're finished
-            if (allDone)
-              self.emit('end')
-            cb()
-          }
-        })
-      })
-    })
-  })
-}
-
-// `data` should contain at least: StreamName, ShardId, ShardIterator
-function getRecords(data, cb) {
-  var self = this
-
-  request('GetRecords', data, self.options, function(err, res) {
-    if (err) return cb(err)
-
-    // If the shard has been closed the requested iterator will not return any more data
-    if (res.NextShardIterator == null)
-      return cb(null, true)
-
-    self.shardIds[data.ShardId].nextShardIterator = res.NextShardIterator
-
-    if (!res.Records.length)
-      return cb(null, false)
-
-    var i, record
-
-    for (i = 0; i < res.Records.length; i++) {
-      record = res.Records[i]
-      self.shardIds[data.ShardId].lastSequenceNumber = record.SequenceNumber
-      if (self.options.objectMode) {
-        self.emit('data', {
-          shardId: data.ShardId,
-          sequenceNumber: record.SequenceNumber,
-          data: new Buffer(record.Data, 'base64'),
-        })
-      } else {
-        self.emit('data', new Buffer(record.Data, 'base64'))
-        self.emit('sequence', {shardId: data.ShardId, sequenceNumber: record.SequenceNumber})
-      }
-    }
-
-    // Recurse until we're done
-    data.ShardIterator = res.NextShardIterator
-    process.nextTick(function() { self.getRecords(data, cb) })
-  })
-}
-
-
-util.inherits(KinesisWriteStream, stream.Writable)
-
-function KinesisWriteStream(name, options) {
-  stream.Writable.call(this, options)
-  this.name = name
-  this.options = options || {}
-  this.resolvePartitionKey = this.options.resolvePartitionKey || KinesisWriteStream._randomPartitionKey
-  this.resolveExplicitHashKey = this.options.resolveExplicitHashKey
-  this.resolveSequenceNumberForOrdering = this.options.resolveSequenceNumberForOrdering
-}
-
-KinesisWriteStream.prototype._write = function(chunk, encoding, cb) {
-  var self = this,
-      partitionKey = self.resolvePartitionKey(chunk, encoding),
-      data = {StreamName: self.name, PartitionKey: partitionKey, Data: chunk.toString('base64')}
-
-  if (self.resolveExplicitHashKey)
-    data.ExplicitHashKey = self.resolveExplicitHashKey(chunk, encoding)
-
-  if (self.resolveSequenceNumberForOrdering)
-    data.SequenceNumberForOrdering = self.resolveSequenceNumberForOrdering(chunk, encoding)
-
-  request('PutRecord', data, self.options, cb)
-}
-
-KinesisWriteStream._randomPartitionKey = function() {
-  return crypto.randomBytes(16).toString('hex')
 }
 
 
@@ -313,3 +379,12 @@ function resolveOptions(options) {
 
   return options
 }
+
+function bignumCompare(a, b) {
+  if (!a) return -1
+  if (!b) return 1
+  var lengthDiff = a.length - b.length
+  if (lengthDiff !== 0) return lengthDiff
+  return a.localeCompare(b)
+}
+

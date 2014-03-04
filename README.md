@@ -11,12 +11,17 @@ This makes it trivial to setup Kinesis as a logging sink with [Bunyan](https://g
 
 For setting up a local Kinesis instance (eg for testing), check out [Kinesalite](https://github.com/mhart/kinesalite).
 
+NB: API has changed from 0.x to 1.x
+-----------------------------------
+
 Example
 -------
 
 ```js
 var fs = require('fs'),
-    kinesis = require('kinesis')
+    Transform = require('stream').Transform,
+    kinesis = require('kinesis'),
+    KinesisStream = kinesis.KinesisStream
 
 // Uses credentials from process.env by default
 
@@ -27,45 +32,63 @@ kinesis.listStreams({region: 'us-west-1'}, function(err, streams) {
   // ["http-logs", "click-logs"]
 })
 
-var kinesisSink = kinesis.createWriteStream('http-logs', {region: 'us-west-1'})
 
-fs.createReadStream('my.log').pipe(kinesisSink)
+var kinesisSink = kinesis.stream('http-logs')
+// OR new KinesisStream('http-logs')
 
-var kinesisSource = kinesis.createReadStream('http-logs', {region: 'us-west-1', oldest: true})
+fs.createReadStream('http.log').pipe(kinesisSink)
 
-kinesisSource.pipe(fs.createWriteStream('my.log'))
+
+var kinesisSource = kinesis.stream({name: 'click-logs', oldest: true})
+
+// Data is retrieved as Record objects, so let's transform into Buffers
+var bufferify = new Transform({objectMode: true})
+bufferify._transform = function(record, encoding, cb) {
+  cb(null, record.Data)
+}
+
+kinesisSource.pipe(bufferify).pipe(fs.createWriteStream('click.log'))
+
+
+// Create a new Kinesis stream using the raw API
+kinesis.request('CreateStream', {StreamName: 'test', ShardCount: 2}, function(err) {
+  if (err) throw err
+
+  kinesis.request('DescribeStream', {StreamName: 'test'}, function(err, data) {
+    if (err) throw err
+
+    console.dir(data)
+  })
+})
 ```
 
 API
 ---
 
+### kinesis.stream(options)
+### new KinesisStream(options)
+
+Returns a readable and writable Node.js stream for the given Kinesis stream
+
+`options` include:
+
+  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
+  - `shards`: an array of shard IDs, or shard objects. If not provided, these will be fetched and cached.
+  - `oldest`: if truthy, then will start at the oldest records (using `TRIM_HORIZON`) instead of the latest
+  - `writeConcurrency`: how many parallel writes to allow (`1` by default)
+  - `cacheSize`: number of PartitionKey-to-SequenceNumber mappings to cache (`1000` by default)
+  - `timeout`: HTTP request timeout (uses Node.js defaults otherwise)
+  - `initialRetryMs`: first pause before retrying under the default policy (`50` by default)
+  - `maxRetries`: max number of retries under the default policy (`10` by default)
+  - `errorCodes`: array of Node.js error codes to retry on (`['EADDRINFO',
+    'ETIMEDOUT', 'ECONNRESET', 'ESOCKETTIMEDOUT', 'ENOTFOUND', 'EMFILE']` by default)
+  - `errorNames`: array of Kinesis exceptions to retry on
+    (`['ProvisionedThroughputExceededException', 'ThrottlingException']` by default)
+  - `retryPolicy`: a function to implement a retry policy different from the default one
+
 ### kinesis.listStreams([options], callback)
 
 Calls the callback with an array of all stream names for the AWS account
-
-### kinesis.createReadStream(name, [options])
-
-Returns a readable stream for the given Kinesis stream that reads from all shards continuously.
-
-`options` include:
-
-  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
-  - `shardIds`: an array of shard ID names, or an key-value object with the
-    shard IDs as keys and sequence number and/or shard iterator as values. If
-    not provided, these will be fetched and cached.
-  - `oldest`: if truthy, then will start at the oldest records (using `TRIM_HORIZON`) instead of the latest
-  - `objectMode`: if truthy, will emit an object with `data`, `shardId` and `sequenceNumber` properties
-
-### kinesis.createWriteStream(name, [options])
-
-Returns a writable stream for the given Kinesis stream
-
-`options` include:
-
-  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
-  - `resolvePartitionKey`: a function to determine the `PartitionKey` of the record (random by default)
-  - `resolveExplicitHashKey`: a function to determine the `ExplicitHashKey` of the record (none by default)
-  - `resolveSequenceNumberForOrdering`: a function to determine the `SequenceNumberForOrdering` of the record (none by default)
 
 ### kinesis.request(action, [data], [options], callback)
 
