@@ -241,7 +241,7 @@ KinesisStream.prototype._write = function(data, encoding, cb) {
 function listStreams(options, cb) {
   if (!cb) { cb = options; options = {} }
 
-  request('ListStreams', options, function(err, res) {
+  request('ListStreams', {}, options, function(err, res) {
     if (err) return cb(err)
 
     return cb(null, res.StreamNames)
