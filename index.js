@@ -267,6 +267,10 @@ function request(action, data, options, cb) {
   httpOptions.path = '/'
   httpOptions.body = body
 
+  // Don't worry about self-signed certs for localhost/testing
+  if (httpOptions.host == 'localhost' || httpOptions.host == '127.0.0.1')
+    httpOptions.rejectUnauthorized = false
+
   httpOptions.headers = {
     'Host': httpOptions.host,
     'Content-Length': Buffer.byteLength(body),
@@ -367,7 +371,7 @@ function resolveOptions(options) {
   } else {
     if (/^[a-z]{2}\-[a-z]+\-\d$/.test(region))
       options.region = region
-    else
+    else if (!options.host)
       // Backwards compatibility for when 1st param was host
       options.host = region
   }
