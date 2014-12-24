@@ -161,7 +161,10 @@ KinesisStream.prototype.getRecords = function(shard, shardIterator, cb) {
 
     shard.nextShardIterator = res.NextShardIterator
 
-    res.Records.forEach(function(record) { record.Data = new Buffer(record.Data, 'base64') })
+    res.Records.forEach(function(record) {
+      record.ShardId = shard.id
+      record.Data = new Buffer(record.Data, 'base64')
+    })
 
     return cb(null, res.Records)
   })
