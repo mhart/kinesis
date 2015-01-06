@@ -294,11 +294,12 @@ function request(action, data, options, cb) {
       res.on('error', cb)
       res.on('data', function(chunk){ json += chunk })
       res.on('end', function() {
-        var response
+        var response, parseError
 
-        try { response = JSON.parse(json) } catch (e) { }
+        if (json)
+          try { response = JSON.parse(json) } catch (e) { parseError = e }
 
-        if (res.statusCode == 200 && response != null)
+        if (res.statusCode == 200 && !parseError)
           return cb(null, response)
 
         error.statusCode = res.statusCode
