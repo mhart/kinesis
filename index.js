@@ -218,6 +218,8 @@ KinesisStream.prototype._write = function(data, encoding, cb) {
     if (bignumCompare(sequenceNumber, self.sequenceCache.get(data.PartitionKey)) > 0)
       self.sequenceCache.set(data.PartitionKey, sequenceNumber)
 
+    self.emit('putRecord')
+
     self.resolveShards(function(err, shards) {
       for (var i = 0; i < shards.length; i++) {
         if (shards[i].id != responseData.ShardId) continue
@@ -225,7 +227,6 @@ KinesisStream.prototype._write = function(data, encoding, cb) {
         if (bignumCompare(sequenceNumber, shards[i].writeSequenceNumber) > 0)
           shards[i].writeSequenceNumber = sequenceNumber
 
-        self.emit('putRecord')
       }
     })
   })
