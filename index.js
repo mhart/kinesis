@@ -5,7 +5,8 @@ var util = require('util'),
     async = require('async'),
     once = require('once'),
     lruCache = require('lru-cache'),
-    aws4 = require('aws4')
+    aws4 = require('aws4'),
+    awscred = require('awscred')
 
 exports.stream = function(options) {
   return new KinesisStream(options)
@@ -256,73 +257,105 @@ function request(action, data, options, cb) {
   if (!cb) { cb = options; options = {} }
   if (!cb) { cb = data; data = {} }
 
-  options = resolveOptions(options)
   cb = once(cb)
 
-  var httpOptions = {},
-      body = JSON.stringify(data),
-      retryPolicy = options.retryPolicy || defaultRetryPolicy
-
-  httpOptions.host = options.host
-  httpOptions.port = options.port
-  if (options.agent != null) httpOptions.agent = options.agent
-  httpOptions.method = 'POST'
-  httpOptions.path = '/'
-  httpOptions.body = body
-
-  // Don't worry about self-signed certs for localhost/testing
-  if (httpOptions.host == 'localhost' || httpOptions.host == '127.0.0.1')
-    httpOptions.rejectUnauthorized = false
-
-  httpOptions.headers = {
-    'Host': httpOptions.host,
-    'Content-Length': Buffer.byteLength(body),
-    'Content-Type': 'application/x-amz-json-1.1',
-    'X-Amz-Target': 'Kinesis_' + options.version + '.' + action,
+  function loadCreds(cb) {
+    var needRegion = !options.region
+    var needCreds = !options.credentials || !options.credentials.accessKeyId || !options.credentials.secretAccessKey
+    if (needRegion && needCreds) {
+      return awscred.load(cb)
+    } else if (needRegion) {
+      return awscred.loadRegion(function(err, region) { cb(err, {region: region}) })
+    } else if (needCreds) {
+      return awscred.loadCredentials(function(err, credentials) { cb(err, {credentials: credentials}) })
+    }
+    cb(null, {})
   }
 
-  function makeRequest(cb) {
-    httpOptions.headers.Date = new Date().toUTCString()
+  loadCreds(function(err, creds) {
+    if (err) return cb(err)
 
-    aws4.sign(httpOptions, options.credentials)
+    if (creds.region) options.region = creds.region
+    if (creds.credentials) {
+      if (!options.credentials) {
+        options.credentials = creds.credentials
+      } else {
+        Object.keys(creds.credentials).forEach(function(key) {
+          if (!options.credentials[key]) options.credentials[key] = creds.credentials[key]
+        })
+      }
+    }
 
-    var req = https.request(httpOptions, function(res) {
-      var json = '', error = new Error
+    options = resolveOptions(options)
 
-      res.setEncoding('utf8')
+    var httpOptions = {},
+        body = JSON.stringify(data),
+        retryPolicy = options.retryPolicy || defaultRetryPolicy
 
-      res.on('error', cb)
-      res.on('data', function(chunk){ json += chunk })
-      res.on('end', function() {
-        var response, parseError
+    httpOptions.host = options.host
+    httpOptions.port = options.port
+    if (options.agent != null) httpOptions.agent = options.agent
+    if (options.timeout != null) httpOptions.timeout = options.timeout
+    if (options.region != null) httpOptions.region = options.region
+    httpOptions.method = 'POST'
+    httpOptions.path = '/'
+    httpOptions.body = body
 
-        if (json)
-          try { response = JSON.parse(json) } catch (e) { parseError = e }
+    // Don't worry about self-signed certs for localhost/testing
+    if (httpOptions.host == 'localhost' || httpOptions.host == '127.0.0.1')
+      httpOptions.rejectUnauthorized = false
 
-        if (res.statusCode == 200 && !parseError)
-          return cb(null, response)
+    httpOptions.headers = {
+      'Host': httpOptions.host,
+      'Content-Length': Buffer.byteLength(body),
+      'Content-Type': 'application/x-amz-json-1.1',
+      'X-Amz-Target': 'Kinesis_' + options.version + '.' + action,
+    }
 
-        error.statusCode = res.statusCode
-        if (response != null) {
-          error.name = (response.__type || '').split('#').pop()
-          error.message = response.message || response.Message || JSON.stringify(response)
-        } else {
-          if (res.statusCode == 413) json = 'Request Entity Too Large'
-          error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
-        }
+    function makeRequest(cb) {
+      httpOptions.headers.Date = new Date().toUTCString()
 
-        cb(error)
-      })
-    }).on('error', cb)
+      aws4.sign(httpOptions, options.credentials)
 
-    if (options.timeout != null) req.setTimeout(options.timeout)
+      var req = https.request(httpOptions, function(res) {
+        var json = ''
 
-    req.end(body)
+        res.setEncoding('utf8')
 
-    return req
-  }
+        res.on('error', cb)
+        res.on('data', function(chunk){ json += chunk })
+        res.on('end', function() {
+          var response, parseError
 
-  return retryPolicy(makeRequest, options, cb)
+          if (json)
+            try { response = JSON.parse(json) } catch (e) { parseError = e }
+
+          if (res.statusCode == 200 && !parseError)
+            return cb(null, response)
+
+          var error = new Error
+          error.statusCode = res.statusCode
+          if (response != null) {
+            error.name = (response.__type || '').split('#').pop()
+            error.message = response.message || response.Message || JSON.stringify(response)
+          } else {
+            if (res.statusCode == 413) json = 'Request Entity Too Large'
+            error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
+          }
+
+          cb(error)
+        })
+      }).on('error', cb)
+
+      if (options.timeout != null) req.setTimeout(options.timeout)
+
+      req.end(body)
+
+      return req
+    }
+
+    return retryPolicy(makeRequest, options, cb)
+  })
 }
 
 function defaultRetryPolicy(makeRequest, options, cb) {
@@ -339,12 +372,25 @@ function defaultRetryPolicy(makeRequest, options, cb) {
       errorNames = options.errorNames || [
         'ProvisionedThroughputExceededException',
         'ThrottlingException',
+      ],
+      expiredNames = options.expiredNames || [
+        'ExpiredTokenException',
+        'ExpiredToken',
+        'RequestExpired',
       ]
 
   function retry(i) {
     return makeRequest(function(err, data) {
       if (!err || i >= maxRetries)
         return cb(err, data)
+
+      if (err.statusCode == 400 && ~expiredNames.indexOf(err.name)) {
+        return awscred.loadCredentials(function(err, credentials) {
+          if (err) return cb(err)
+          options.credentials = credentials
+          return makeRequest(cb)
+        })
+      }
 
       if (err.statusCode >= 500 || ~errorCodes.indexOf(err.code) || ~errorNames.indexOf(err.name))
         return setTimeout(retry, initialRetryMs << i, i + 1)
@@ -395,4 +441,3 @@ function bignumCompare(a, b) {
   if (lengthDiff !== 0) return lengthDiff
   return a.localeCompare(b)
 }
-
