@@ -96,6 +96,7 @@ Makes a generic Kinesis request with the given action (eg, `ListStreams`) and da
 
 `options` include:
 
-  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
-
-
+  - `region`: a string (`us-east-1` by default).
+  - `credentials`: a object with AWS credentials.
+  - or host, port, ect.
+  
