@@ -72,11 +72,13 @@ Returns a readable and writable Node.js stream for the given Kinesis stream
 
 `options` include:
 
-  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
+  - `region`: a string, or (deprecated) object with AWS credentials, host, port, etc (resolved from env or file by default)
+  - `credentials`: an object with `accessKeyId`/`secretAccessKey` properties (resolved from env, file or IAM by default)
   - `shards`: an array of shard IDs, or shard objects. If not provided, these will be fetched and cached.
   - `oldest`: if truthy, then will start at the oldest records (using `TRIM_HORIZON`) instead of the latest
   - `writeConcurrency`: how many parallel writes to allow (`1` by default)
   - `cacheSize`: number of PartitionKey-to-SequenceNumber mappings to cache (`1000` by default)
+  - `agent`: HTTP agent used (uses Node.js defaults otherwise)
   - `timeout`: HTTP request timeout (uses Node.js defaults otherwise)
   - `initialRetryMs`: first pause before retrying under the default policy (`50` by default)
   - `maxRetries`: max number of retries under the default policy (`10` by default)
@@ -96,6 +98,14 @@ Makes a generic Kinesis request with the given action (eg, `ListStreams`) and da
 
 `options` include:
 
-  - `region`: a string, or object with AWS credentials, host, port, etc (`us-east-1` by default)
-
-
+  - `region`: a string, or (deprecated) object with AWS credentials, host, port, etc (resolved from env or file by default)
+  - `credentials`: an object with `accessKeyId`/`secretAccessKey` properties (resolved from env, file or IAM by default)
+  - `agent`: HTTP agent used (uses Node.js defaults otherwise)
+  - `timeout`: HTTP request timeout (uses Node.js defaults otherwise)
+  - `initialRetryMs`: first pause before retrying under the default policy (`50` by default)
+  - `maxRetries`: max number of retries under the default policy (`10` by default)
+  - `errorCodes`: array of Node.js error codes to retry on (`['EADDRINFO',
+    'ETIMEDOUT', 'ECONNRESET', 'ESOCKETTIMEDOUT', 'ENOTFOUND', 'EMFILE']` by default)
+  - `errorNames`: array of Kinesis exceptions to retry on
+    (`['ProvisionedThroughputExceededException', 'ThrottlingException']` by default)
+  - `retryPolicy`: a function to implement a retry policy different from the default one

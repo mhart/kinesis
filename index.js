@@ -220,6 +220,10 @@ KinesisStream.prototype._write = function(data, encoding, cb) {
       self.sequenceCache.set(data.PartitionKey, sequenceNumber)
 
     self.resolveShards(function(err, shards) {
+      if (err) {
+        self.emit('putRecord')
+        return self.emit('error', err)
+      }
       for (var i = 0; i < shards.length; i++) {
         if (shards[i].id != responseData.ShardId) continue
 
@@ -259,6 +263,8 @@ function request(action, data, options, cb) {
 
   cb = once(cb)
 
+  options = resolveOptions(options)
+
   function loadCreds(cb) {
     var needRegion = !options.region
     var needCreds = !options.credentials || !options.credentials.accessKeyId || !options.credentials.secretAccessKey
@@ -286,7 +292,8 @@ function request(action, data, options, cb) {
       }
     }
 
-    options = resolveOptions(options)
+    if (!options.region) options.region = (options.host || '').split('.', 2)[1] || 'us-east-1'
+    if (!options.host) options.host = 'kinesis.' + options.region + '.amazonaws.com'
 
     var httpOptions = {},
         body = JSON.stringify(data),
@@ -323,7 +330,7 @@ function request(action, data, options, cb) {
         res.setEncoding('utf8')
 
         res.on('error', cb)
-        res.on('data', function(chunk){ json += chunk })
+        res.on('data', function(chunk) { json += chunk })
         res.on('end', function() {
           var response, parseError
 
@@ -410,26 +417,21 @@ function resolveOptions(options) {
     return clone
   }, {})
 
-  if (typeof region === 'object') {
-    options.host = region.host
-    options.port = region.port
-    options.region = region.region
-    options.version = region.version
-    options.agent = region.agent
-    options.https = region.https
-    options.credentials = region.credentials
-  } else {
-    if (/^[a-z]{2}\-[a-z]+\-\d$/.test(region))
-      options.region = region
-    else if (!options.host)
-      // Backwards compatibility for when 1st param was host
-      options.host = region
+  if (typeof region === 'object' && region != null) {
+    options.host = options.host || region.host
+    options.port = options.port || region.port
+    options.region = options.region || region.region
+    options.version = options.version || region.version
+    options.agent = options.agent || region.agent
+    options.https = options.https || region.https
+    options.credentials = options.credentials || region.credentials
+  } else if (/^[a-z]{2}\-[a-z]+\-\d$/.test(region)) {
+    options.region = region
+  } else if (!options.host) {
+    // Backwards compatibility for when 1st param was host
+    options.host = region
   }
-  if (!options.region) options.region = (options.host || '').split('.', 2)[1] || 'us-east-1'
-  if (!options.host) options.host = 'kinesis.' + options.region + '.amazonaws.com'
   if (!options.version) options.version = '20131202'
-
-  if (!options.credentials) options.credentials = options.credentials
 
   return options
 }
