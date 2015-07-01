@@ -96,7 +96,10 @@ KinesisStream.prototype.getShardIds = function(cb) {
   var self = this
   request('DescribeStream', {StreamName: self.name}, self.options, function(err, res) {
     if (err) return cb(err)
-    cb(null, res.StreamDescription.Shards.map(function(shard) { return shard.ShardId }))
+    cb(null, res.StreamDescription.Shards
+      .filter(function(shard) { return !(shard.SequenceNumberRange && shard.SequenceNumberRange.EndingSequenceNumber) })
+      .map(function(shard) { return shard.ShardId })
+    )
   })
 }
 
