@@ -146,7 +146,12 @@ KinesisStream.prototype.getShardIteratorRecords = function(shard, cb) {
       if (records.length) {
         shard.readSequenceNumber = records[records.length - 1].SequenceNumber
         self.buffer = self.buffer.concat(records)
-        self.drainBuffer()
+
+        if (self.options.backoffTime) {
+          setTimeout(self.drainBuffer.bind(self), self.options.backoffTime)
+        } else {
+          self.drainBuffer()
+        }
       }
 
       cb()
