@@ -5,8 +5,10 @@ var util = require('util'),
     async = require('async'),
     once = require('once'),
     lruCache = require('lru-cache'),
-    aws4 = require('aws4'),
-    awscred = require('awscred')
+    aws = require('aws-sdk'),
+    lowerCaseFirstLetter = function(string) {
+      return string.charAt(0).toLowerCase() + string.slice(1)
+    }
 
 exports.stream = function(options) {
   return new KinesisStream(options)
@@ -152,7 +154,7 @@ KinesisStream.prototype.getShardIteratorRecords = function(shard, cb) {
 
 KinesisStream.prototype.getRecords = function(shard, shardIterator, cb) {
   var self = this,
-      data = {StreamName: self.name, ShardId: shard.id, ShardIterator: shardIterator}
+      data = {ShardIterator: shardIterator}
 
   request('GetRecords', data, self.options, function(err, res) {
     if (err) return cb(err)
@@ -263,109 +265,23 @@ function listStreams(options, cb) {
 function request(action, data, options, cb) {
   if (!cb) { cb = options; options = {} }
   if (!cb) { cb = data; data = {} }
+  var self = this;
 
   cb = once(cb)
 
-  options = resolveOptions(options)
+  var awsOptions = Object.assign(
+    {},
+    {apiVersion: '2013-12-02'},
+    options.awsOptions
+  );
+  var retryPolicy = options.retryPolicy || defaultRetryPolicy
+  var kinesis = new aws.Kinesis(awsOptions);
 
-  function loadCreds(cb) {
-    var needRegion = !options.region
-    var needCreds = !options.credentials || !options.credentials.accessKeyId || !options.credentials.secretAccessKey
-    if (needRegion && needCreds) {
-      return awscred.load(cb)
-    } else if (needRegion) {
-      return awscred.loadRegion(function(err, region) { cb(err, {region: region}) })
-    } else if (needCreds) {
-      return awscred.loadCredentials(function(err, credentials) { cb(err, {credentials: credentials}) })
-    }
-    cb(null, {})
+  function makeRequest(cb) {
+    kinesis[lowerCaseFirstLetter(action)](data, cb);
   }
 
-  loadCreds(function(err, creds) {
-    if (err) return cb(err)
-
-    if (creds.region) options.region = creds.region
-    if (creds.credentials) {
-      if (!options.credentials) {
-        options.credentials = creds.credentials
-      } else {
-        Object.keys(creds.credentials).forEach(function(key) {
-          if (!options.credentials[key]) options.credentials[key] = creds.credentials[key]
-        })
-      }
-    }
-
-    if (!options.region) options.region = (options.host || '').split('.', 2)[1] || 'us-east-1'
-    if (!options.host) options.host = 'kinesis.' + options.region + '.amazonaws.com'
-
-    var httpOptions = {},
-        body = JSON.stringify(data),
-        retryPolicy = options.retryPolicy || defaultRetryPolicy
-
-    httpOptions.host = options.host
-    httpOptions.port = options.port
-    if (options.agent != null) httpOptions.agent = options.agent
-    if (options.timeout != null) httpOptions.timeout = options.timeout
-    if (options.region != null) httpOptions.region = options.region
-    httpOptions.method = 'POST'
-    httpOptions.path = '/'
-    httpOptions.body = body
-
-    // Don't worry about self-signed certs for localhost/testing
-    if (httpOptions.host == 'localhost' || httpOptions.host == '127.0.0.1')
-      httpOptions.rejectUnauthorized = false
-
-    httpOptions.headers = {
-      'Host': httpOptions.host,
-      'Content-Length': Buffer.byteLength(body),
-      'Content-Type': 'application/x-amz-json-1.1',
-      'X-Amz-Target': 'Kinesis_' + options.version + '.' + action,
-    }
-
-    function makeRequest(cb) {
-      httpOptions.headers.Date = new Date().toUTCString()
-
-      aws4.sign(httpOptions, options.credentials)
-
-      var req = https.request(httpOptions, function(res) {
-        var json = ''
-
-        res.setEncoding('utf8')
-
-        res.on('error', cb)
-        res.on('data', function(chunk) { json += chunk })
-        res.on('end', function() {
-          var response, parseError
-
-          if (json)
-            try { response = JSON.parse(json) } catch (e) { parseError = e }
-
-          if (res.statusCode == 200 && !parseError)
-            return cb(null, response)
-
-          var error = new Error
-          error.statusCode = res.statusCode
-          if (response != null) {
-            error.name = (response.__type || '').split('#').pop()
-            error.message = response.message || response.Message || JSON.stringify(response)
-          } else {
-            if (res.statusCode == 413) json = 'Request Entity Too Large'
-            error.message = 'HTTP/1.1 ' + res.statusCode + ' ' + json
-          }
-
-          cb(error)
-        })
-      }).on('error', cb)
-
-      if (options.timeout != null) req.setTimeout(options.timeout)
-
-      req.end(body)
-
-      return req
-    }
-
-    return retryPolicy(makeRequest, options, cb)
-  })
+  retryPolicy(makeRequest, options, cb)
 }
 
 function defaultRetryPolicy(makeRequest, options, cb) {
@@ -395,11 +311,7 @@ function defaultRetryPolicy(makeRequest, options, cb) {
         return cb(err, data)
 
       if (err.statusCode == 400 && ~expiredNames.indexOf(err.name)) {
-        return awscred.loadCredentials(function(err, credentials) {
-          if (err) return cb(err)
-          options.credentials = credentials
-          return makeRequest(cb)
-        })
+        return makeRequest(cb)
       }
 
       if (err.statusCode >= 500 || ~errorCodes.indexOf(err.code) || ~errorNames.indexOf(err.name))
@@ -410,33 +322,6 @@ function defaultRetryPolicy(makeRequest, options, cb) {
   }
 
   return retry(0)
-}
-
-function resolveOptions(options) {
-  var region = options.region
-
-  options = Object.keys(options).reduce(function(clone, key) {
-    clone[key] = options[key]
-    return clone
-  }, {})
-
-  if (typeof region === 'object' && region != null) {
-    options.host = options.host || region.host
-    options.port = options.port || region.port
-    options.region = options.region || region.region
-    options.version = options.version || region.version
-    options.agent = options.agent || region.agent
-    options.https = options.https || region.https
-    options.credentials = options.credentials || region.credentials
-  } else if (/^[a-z]{2}\-[a-z]+\-\d$/.test(region)) {
-    options.region = region
-  } else if (!options.host) {
-    // Backwards compatibility for when 1st param was host
-    options.host = region
-  }
-  if (!options.version) options.version = '20131202'
-
-  return options
 }
 
 function bignumCompare(a, b) {

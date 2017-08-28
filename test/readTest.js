@@ -1,5 +1,6 @@
 var Writable = require('stream').Writable,
-    kinesis = require('..')
+    kinesis = require('..'),
+    streamName = 'test';
 
 require('https').globalAgent.maxSockets = Infinity
 
@@ -10,6 +11,6 @@ consoleOut._write = function(chunk, encoding, cb) {
   cb()
 }
 
-var kinesisStream = kinesis.stream({name: 'test', oldest: true})
+var kinesisStream = kinesis.stream({name: streamName, oldest: true})
 
 kinesisStream.pipe(consoleOut)

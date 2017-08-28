@@ -1,5 +1,6 @@
 var Readable = require('stream').Readable,
-    kinesis = require('..')
+    kinesis = require('..'),
+    streamName = 'test';
 
 require('https').globalAgent.maxSockets = Infinity
 
@@ -10,6 +11,6 @@ readable._read = function() {
   this.push(null)
 }
 
-var kinesisStream = kinesis.stream({name: 'test', writeConcurrency: 5})
+var kinesisStream = kinesis.stream({name: streamName, writeConcurrency: 5})
 
 readable.pipe(kinesisStream).on('end', function() { console.log('done') })
