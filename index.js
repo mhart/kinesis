@@ -8,20 +8,21 @@ var util = require('util'),
     aws4 = require('aws4'),
     awscred = require('awscred')
 
-exports.stream = function(options) {
-  return new KinesisStream(options)
+exports.stream = function(options, checkpoints) {
+  return new KinesisStream(options, checkpoints)
 }
 exports.KinesisStream = KinesisStream
 exports.listStreams = listStreams
 exports.request = request
 
 
-function KinesisStream(options) {
+function KinesisStream(options, checkpoints) {
   if (typeof options == 'string') options = {name: options}
   if (!options || !options.name) throw new Error('A stream name must be given')
   stream.Duplex.call(this, {objectMode: true})
   this.options = options
   this.name = options.name
+  this.checkpoints = checkpoints || {}
   this.writeConcurrency = options.writeConcurrency || 1
   this.sequenceCache = lruCache(options.cacheSize || 1000)
   this.currentWrites = 0
@@ -110,9 +111,9 @@ KinesisStream.prototype.getShardIteratorRecords = function(shard, cb) {
   if (shard.nextShardIterator != null) {
     getShardIterator = function(cb) { cb(null, shard.nextShardIterator) }
   } else {
-    if (shard.readSequenceNumber != null) {
+    if (shard.readSequenceNumber != null || self.checkpoints[shard.id] != undefined) {
       data.ShardIteratorType = 'AFTER_SEQUENCE_NUMBER'
-      data.StartingSequenceNumber = shard.readSequenceNumber
+      data.StartingSequenceNumber = shard.readSequenceNumber || self.checkpoints[shard.id]
     } else if (self.options.oldest) {
       data.ShardIteratorType = 'TRIM_HORIZON'
     } else {
@@ -156,7 +157,6 @@ KinesisStream.prototype.getRecords = function(shard, shardIterator, cb) {
 
   request('GetRecords', data, self.options, function(err, res) {
     if (err) return cb(err)
-
     // If the shard has been closed the requested iterator will not return any more data
     if (res.NextShardIterator == null) {
       shard.ended = true
@@ -402,9 +402,9 @@ function defaultRetryPolicy(makeRequest, options, cb) {
         })
       }
 
-      if (err.statusCode >= 500 || ~errorCodes.indexOf(err.code) || ~errorNames.indexOf(err.name))
+      if (err.statusCode >= 500 || ~errorCodes.indexOf(err.code) || ~errorNames.indexOf(err.name)){
         return setTimeout(retry, initialRetryMs << i, i + 1)
-
+      }
       return cb(err)
     })
   }
