@@ -1,9 +1,9 @@
 {
-  "name": "kinesis",
+  "name": "kinesis-checkpoints",
   "version": "1.2.2",
-  "description": "A stream implementation of Amazon's Kinesis",
+  "description": "A stream implementation of Amazon's Kinesis. A fork of mhart/kinesis lib with support of checkpoints",
   "main": "index.js",
-  "repository": "mhart/kinesis",
+  "repository": "akhainak/kinesis-checkpoints",
   "keywords": [
     "kinesis",
     "stream",
@@ -12,7 +12,7 @@
     "logs",
     "logging"
   ],
-  "author": "Michael Hart <michael.hart.au@gmail.com>",
+  "author": "Aliaksandr Khainak <michael.hart.au@gmail.com>",
   "license": "MIT",
   "dependencies": {
     "async": "^0.9.0",
