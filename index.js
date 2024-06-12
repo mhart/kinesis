@@ -152,7 +152,8 @@ KinesisStream.prototype.getShardIteratorRecords = function(shard, cb) {
 
 KinesisStream.prototype.getRecords = function(shard, shardIterator, cb) {
   var self = this,
-      data = {StreamName: self.name, ShardId: shard.id, ShardIterator: shardIterator}
+      limit = self.options.limit || 25,
+      data = {ShardIterator: shardIterator, Limit: limit}
 
   request('GetRecords', data, self.options, function(err, res) {
     if (err) return cb(err)
